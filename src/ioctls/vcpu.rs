@@ -15,7 +15,7 @@ use ioctls::{KvmRunWrapper, Result};
 use kvm_bindings::{CpuId, Msrs, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::*;
 use vmm_sys_util::errno;
-use vmm_sys_util::ioctl::{ioctl, ioctl_with_mut_ref, ioctl_with_ref};
+use vmm_sys_util::ioctl::{ioctl, ioctl_with_mut_ref, ioctl_with_ref, ioctl_with_val};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use vmm_sys_util::ioctl::{ioctl_with_mut_ptr, ioctl_with_ptr};
 
@@ -1339,6 +1339,37 @@ impl VcpuFd {
         let kvm_run = self.kvm_run_ptr.as_mut_ref();
         kvm_run.immediate_exit = val;
     }
+
+    /// Returns the vCPU tsc frequency in KHz or error if the host has unstable tsc.
+    ///
+    pub fn get_tsc_khz(&self) -> Result<u32> {
+        // Safe because we know that our file is a KVM fd and that the request is one of the ones
+        // defined by kernel.
+        let ret = unsafe { ioctl(self, KVM_GET_TSC_KHZ()) };
+        if ret > 0 {
+            Ok(ret as u32)
+        } else {
+            Err(errno::Error::new(ret))
+        }
+    }
+
+    /// Sets the specified vCPU tsc frequency.
+    ///
+    /// # Arguments
+    ///
+    /// * `freq` - The frequency unit is KHz as per the the KVM API documentation
+    /// for `KVM_SET_TSC_KHZ`.
+    ///
+    pub fn set_tsc_khz(&self, freq: u32) -> Result<()> {
+        // Safe because we know that our file is a KVM fd and that the request is one of the ones
+        // defined by kernel.
+        let ret = unsafe { ioctl_with_val(self, KVM_SET_TSC_KHZ(), freq as u64) };
+        if ret < 0 {
+            Err(errno::Error::last())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Helper function to create a new `VcpuFd`.
@@ -2171,5 +2202,31 @@ mod tests {
             cap.cap = KVM_CAP_HYPERV_SYNIC;
             vcpu.enable_cap(&cap).unwrap();
         }
+    }
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_get_tsc_khz() {
+        let kvm = Kvm::new().unwrap();
+        let vm = kvm.create_vm().unwrap();
+
+        let vcpu = vm.create_vcpu(0).unwrap();
+        assert!(vcpu.get_tsc_khz().unwrap() > 0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_set_tsc_khz() {
+        let kvm = Kvm::new().unwrap();
+        let vm = kvm.create_vm().unwrap();
+
+        let vcpu = vm.create_vcpu(0).unwrap();
+        let freq = vcpu.get_tsc_khz().unwrap();
+        println!("{}", freq);
+        println!("{:?}", vcpu.set_tsc_khz(freq));
+        assert!(vcpu.set_tsc_khz(0).is_ok());
+        assert!(vcpu.set_tsc_khz(freq).is_ok());
+        assert!(vcpu.set_tsc_khz(freq - 500000).is_ok());
+        assert!(vcpu.set_tsc_khz(freq + 500000).is_ok());
+
     }
 }
